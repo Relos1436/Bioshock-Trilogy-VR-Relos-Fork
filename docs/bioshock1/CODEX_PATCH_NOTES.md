@@ -5,11 +5,14 @@ This file records the local BioShock Remastered changes carried on the
 v0.8.3, commit `41f004bc6a1e4fa8be0d0e0749f9ac5a0453e75e`.
 
 The upstream-connected public fork is
-https://github.com/Relos1436/bioshock-trilogy-vr. A private standalone backup
-with the same changes and upstream history is at
+https://github.com/Relos1436/Bioshock-Trilogy-VR-Relos-Fork. A private
+standalone backup with the same changes and upstream history is at
 https://github.com/Relos1436/bioshock-trilogy-vr-private. GitHub does not permit
 a public repository to have a private fork, so the backup is not connected to
 the upstream fork network.
+
+- Public fork renamed on 2026-10-12 from `bioshock-trilogy-vr` to
+  `Bioshock-Trilogy-VR-Relos-Fork`. — Codex
 
 ## Changes and additions
 

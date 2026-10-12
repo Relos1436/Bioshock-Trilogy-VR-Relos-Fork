@@ -12,8 +12,10 @@ the changed files, installed build hashes, and validation boundary.
 
 The user reports in-headset that the wrench idle now appears fixed and that the
 menu and height control are usable. The user has not separately confirmed hit
-registration in the latest build. The public upstream-connected fork is
-[Relos1436/bioshock-trilogy-vr](https://github.com/Relos1436/bioshock-trilogy-vr).
+registration in the latest build. The public upstream-connected fork was renamed
+on 2026-10-12 from `bioshock-trilogy-vr` to
+[Relos1436/Bioshock-Trilogy-VR-Relos-Fork](https://github.com/Relos1436/Bioshock-Trilogy-VR-Relos-Fork).
+— Codex
 The same source and history are also kept in the private standalone backup
 [Relos1436/bioshock-trilogy-vr-private](https://github.com/Relos1436/bioshock-trilogy-vr-private).
 GitHub does not permit a public repository to have a private fork, so the
