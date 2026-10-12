@@ -4416,6 +4416,19 @@ bool get_hand_pose(int hand, bool aimPose, HeadPose& out) {
     return true;
 }
 
+bool get_raw_hand_pose(int hand, bool aimPose, HeadPose& out) {
+    float p[3], q[4];
+    if (!input_get_raw_hand_pose(hand, aimPose, p, q)) return false;
+    out = {p[0], p[1], p[2], q[0], q[1], q[2], q[3]};
+    return true;
+}
+
+float hand_squeeze(int hand) { return input_hand_squeeze(hand); }
+void reserve_grip_bumper(int hand, bool on) { input_reserve_grip_bumper(hand, on); }
+void haptic_pulse(int hand, float amplitude, int durationMs) {
+    input_haptic_pulse(hand, amplitude, durationMs);
+}
+
 void set_sim_hand_pose(int hand, bool aimPose, bool valid, const float pos3[3],
                        const float quat4[4]) {
     input_set_sim_hand(hand, aimPose, valid, pos3, quat4);
@@ -5142,6 +5155,10 @@ void draw_debug_ui() {}
 bool get_head_pose(HeadPose&) { return false; }
 bool peek_head_pose(HeadPose&) { return false; }
 bool get_hand_pose(int, bool, HeadPose&) { return false; }
+bool get_raw_hand_pose(int, bool, HeadPose&) { return false; }
+float hand_squeeze(int) { return 0.0f; }
+void reserve_grip_bumper(int, bool) {}
+void haptic_pulse(int, float, int) {}
 void set_sim_hand_pose(int, bool, bool, const float[3], const float[4]) {}
 void clear_sim_hand_poses() {}
 bool session_live() { return false; }

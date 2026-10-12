@@ -161,6 +161,16 @@ XrAction g_aimL = XR_NULL_HANDLE;      // AIM poses - where the controller POINT
 XrAction g_aimR = XR_NULL_HANDLE;      // The runtime's own pointing ray; the grip
                                        // pose runs along the handle and reads
                                        // tens of degrees low as an aim vector.
+XrAction g_hapticL = XR_NULL_HANDLE;
+XrAction g_hapticR = XR_NULL_HANDLE;
+// OpenXR haptic output action pattern follows Owloeb's MIT left-hand edition,
+// commit 7734c62; this fork adds the actions to its own profile bindings.
+std::atomic<uint32_t> g_hapticSeq[2]{};
+std::atomic<float> g_hapticAmp[2]{};
+std::atomic<int> g_hapticMs[2]{};
+uint32_t g_hapticDone[2] = {0, 0};
+std::atomic<float> g_squeeze[2]{}; // raw grip squeeze by physical role
+std::atomic<uint64_t> g_reserveMs[2]{}; // reserved grip is consumed, expires after 200 ms
 
 XrSpace g_gripSpaceL = XR_NULL_HANDLE; // session children
 XrSpace g_gripSpaceR = XR_NULL_HANDLE;
@@ -361,6 +371,8 @@ void input_create(XrInstance instance) {
     made += make_action("pose_r", "Right grip pose", XR_ACTION_TYPE_POSE_INPUT, &g_poseR);
     made += make_action("aim_l", "Left aim pose", XR_ACTION_TYPE_POSE_INPUT, &g_aimL);
     made += make_action("aim_r", "Right aim pose", XR_ACTION_TYPE_POSE_INPUT, &g_aimR);
+    made += make_action("haptic_l", "Left haptic", XR_ACTION_TYPE_VIBRATION_OUTPUT, &g_hapticL);
+    made += make_action("haptic_r", "Right haptic", XR_ACTION_TYPE_VIBRATION_OUTPUT, &g_hapticR);
 
     // Quest 3 Touch. Never bind .../input/system/click - reserved by runtimes.
     XrActionSuggestedBinding touch[] = {
@@ -383,6 +395,8 @@ void input_create(XrInstance instance) {
         {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
         {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
         {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+        {g_hapticL, path(instance, "/user/hand/left/output/haptic")},
+        {g_hapticR, path(instance, "/user/hand/right/output/haptic")},
     };
     XrInteractionProfileSuggestedBinding sb{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
     sb.interactionProfile = path(instance, "/interaction_profiles/oculus/touch_controller");
@@ -402,6 +416,8 @@ void input_create(XrInstance instance) {
         {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
         {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
         {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+        {g_hapticL, path(instance, "/user/hand/left/output/haptic")},
+        {g_hapticR, path(instance, "/user/hand/right/output/haptic")},
     };
     sb.interactionProfile = path(instance, "/interaction_profiles/khr/simple_controller");
     sb.suggestedBindings = simple;
@@ -438,6 +454,8 @@ void input_create(XrInstance instance) {
         {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
         {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
         {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+        {g_hapticL, path(instance, "/user/hand/left/output/haptic")},
+        {g_hapticR, path(instance, "/user/hand/right/output/haptic")},
     };
     sb.interactionProfile = path(instance, "/interaction_profiles/valve/index_controller");
     sb.suggestedBindings = index;
@@ -468,6 +486,8 @@ void input_create(XrInstance instance) {
         {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
         {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
         {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+        {g_hapticL, path(instance, "/user/hand/left/output/haptic")},
+        {g_hapticR, path(instance, "/user/hand/right/output/haptic")},
     };
     sb.interactionProfile = path(instance, "/interaction_profiles/htc/vive_controller");
     sb.suggestedBindings = vive;
@@ -501,6 +521,8 @@ void input_create(XrInstance instance) {
         {g_poseR, path(instance, "/user/hand/right/input/grip/pose")},
         {g_aimL, path(instance, "/user/hand/left/input/aim/pose")},
         {g_aimR, path(instance, "/user/hand/right/input/aim/pose")},
+        {g_hapticL, path(instance, "/user/hand/left/output/haptic")},
+        {g_hapticR, path(instance, "/user/hand/right/output/haptic")},
     };
     sb.interactionProfile =
         path(instance, "/interaction_profiles/microsoft/motion_controller");
@@ -598,6 +620,24 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     locate_hand(session, g_aimL, g_aimSpaceL, predictedDisplayTime, g_aims[0]);
     locate_hand(session, g_aimR, g_aimSpaceR, predictedDisplayTime, g_aims[1]);
 
+    // Game-thread events are queued by physical hand and applied here, where
+    // the session and action set are live.
+    for (int hand = 0; hand < 2; ++hand) {
+        const uint32_t seq = g_hapticSeq[hand].load(std::memory_order_acquire);
+        if (seq == g_hapticDone[hand]) continue;
+        g_hapticDone[hand] = seq;
+        const XrAction action = hand == 0 ? g_hapticL : g_hapticR;
+        if (action == XR_NULL_HANDLE) continue;
+        XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+        info.action = action;
+        XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
+        vibration.duration = static_cast<XrDuration>(g_hapticMs[hand].load(std::memory_order_relaxed)) * 1000000LL;
+        vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+        vibration.amplitude = g_hapticAmp[hand].load(std::memory_order_relaxed);
+        xrApplyHapticFeedback(session, &info,
+                              reinterpret_cast<const XrHapticBaseHeader*>(&vibration));
+    }
+
     // Session 31 swing-to-attack: feed the right hand's motion to the detector.
     // Read through input_get_hand_pose rather than off g_hands[1] directly, so
     // the session-20 sim overlay (vrrec replay, `vrrec hand`) drives the gesture
@@ -633,15 +673,20 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
 
     float gl = read_float(session, g_gripL);
     float gr = read_float(session, g_gripR);
+    g_squeeze[0].store(gl, std::memory_order_relaxed);
+    g_squeeze[1].store(gr, std::memory_order_relaxed);
     g_gripLatchedL = g_gripLatchedL ? (gl >= kGripRelease) : (gl >= kGripPress);
     g_gripLatchedR = g_gripLatchedR ? (gr >= kGripRelease) : (gr >= kGripPress);
+    const uint64_t now = GetTickCount64();
+    const bool reserveL = now - g_reserveMs[0].load(std::memory_order_relaxed) < 200;
+    const bool reserveR = now - g_reserveMs[1].load(std::memory_order_relaxed) < 200;
 
     // ONE map read per compose. A single relaxed load behind it, so a live A/B
     // can never build a half-switched pad.
     const PadMap& map = active_pad_map();
 
-    if (g_gripLatchedL) pad.buttons |= map.gripL;
-    if (g_gripLatchedR) pad.buttons |= map.gripR;
+    if (g_gripLatchedL && !reserveL) pad.buttons |= map.gripL;
+    if (g_gripLatchedR && !reserveR) pad.buttons |= map.gripR;
 
     // The face buttons, from the table. What each bit MEANS in the game is in
     // the table's own comment; the composer only lands the bit.
@@ -705,7 +750,7 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
         if (map.stickClickR && clickRraw) pad.buttons |= map.stickClickR;
     }
 
-    uint64_t now = GetTickCount64();
+    // `now` above also gates short-lived grip reservations used by calibration.
 
     // Ammo-slot select (session 19, revised twice by headset runs): the
     // three ammo types sit on dpad UP / DOWN / LEFT (each direction SELECTS
@@ -720,7 +765,7 @@ void input_sync(XrSession session, XrTime predictedDisplayTime) {
     if (map.flick) {
         float rawX = 0.0f, rawY = 0.0f;
         read_vec2(session, g_look, &rawX, &rawY);
-        bool gripHeld = g_gripLatchedL || g_gripLatchedR;
+        bool gripHeld = (g_gripLatchedL && !reserveL) || (g_gripLatchedR && !reserveR);
 
         // Session 23: the modifier can also be the LEFT thumbrest. It has to be
         // the left one - the right thumb cannot rest on the right thumbrest and
@@ -839,6 +884,37 @@ bool input_get_hand_pose(int hand, bool aimPose, float* pos3, float* quat4) {
     pos3[0] = s.px; pos3[1] = s.py; pos3[2] = s.pz;
     quat4[0] = s.qx; quat4[1] = s.qy; quat4[2] = s.qz; quat4[3] = s.qw;
     return true;
+}
+
+bool input_get_raw_hand_pose(int hand, bool aimPose, float* pos3, float* quat4) {
+    if (hand < 0 || hand > 1 || !pos3 || !quat4) return false;
+    const bool sim = g_simHandsActive.load(std::memory_order_relaxed);
+    const HandSlot& s = sim ? (aimPose ? g_simAims[hand] : g_simHands[hand])
+                            : (aimPose ? g_aims[hand] : g_hands[hand]);
+    if (!s.valid.load(std::memory_order_relaxed)) return false;
+    pos3[0] = s.px; pos3[1] = s.py; pos3[2] = s.pz;
+    quat4[0] = s.qx; quat4[1] = s.qy; quat4[2] = s.qz; quat4[3] = s.qw;
+    return true;
+}
+
+float input_hand_squeeze(int hand) {
+    return hand >= 0 && hand <= 1 ? g_squeeze[hand].load(std::memory_order_relaxed) : 0.0f;
+}
+
+void input_reserve_grip_bumper(int hand, bool on) {
+    if (hand >= 0 && hand <= 1)
+        g_reserveMs[hand].store(on ? GetTickCount64() : 0, std::memory_order_relaxed);
+}
+
+void input_haptic_pulse(int hand, float amplitude, int durationMs) {
+    if (hand < 0 || hand > 1) return;
+    if (amplitude < 0.0f) amplitude = 0.0f;
+    if (amplitude > 1.0f) amplitude = 1.0f;
+    if (durationMs < 0) durationMs = 0;
+    if (durationMs > 5000) durationMs = 5000;
+    g_hapticAmp[hand].store(amplitude, std::memory_order_relaxed);
+    g_hapticMs[hand].store(durationMs, std::memory_order_relaxed);
+    g_hapticSeq[hand].fetch_add(1, std::memory_order_release);
 }
 
 void input_set_sim_hand(int hand, bool aimPose, bool valid, const float pos3[3],

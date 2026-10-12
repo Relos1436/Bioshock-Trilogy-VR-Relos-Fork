@@ -45,6 +45,12 @@ void input_draw_debug_ui();
 // as a quaternion - XR convention, like HeadPose; the adapter converts to
 // Unreal units.
 bool input_get_hand_pose(int hand, bool aimPose, float* pos3, float* quat4);
+// The unmodified controller pose, used by calibration flows that must not
+// learn from any synthetic or later pose transform.
+bool input_get_raw_hand_pose(int hand, bool aimPose, float* pos3, float* quat4);
+float input_hand_squeeze(int hand);
+void input_reserve_grip_bumper(int hand, bool on);
+void input_haptic_pulse(int hand, float amplitude, int durationMs);
 
 // Session 20 vrrec: sim overlay on the funnel above. While any slot is armed,
 // input_get_hand_pose serves the injected poses to ALL consumers (ray, model,

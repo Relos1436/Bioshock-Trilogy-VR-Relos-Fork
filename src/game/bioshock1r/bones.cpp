@@ -83,14 +83,14 @@ struct CachedBone {
     float s[3];
     bool writeScale;
 };
-CachedBone g_cache[kMaxBones];
+CachedBone g_cache[kMaxBones * 2];
 int g_cacheCount = 0;
 struct CachedSleeve {
     int idx;
     float p[3];
     float s[3];
 };
-CachedSleeve g_cacheSleeve[8];
+CachedSleeve g_cacheSleeve[16];
 int g_cacheSleeveCount = 0;
 
 // Session 20 idle-sway kill (default ON; `vrhands swaykill on|off`): freeze
@@ -130,6 +130,7 @@ struct CachedHidden {
 CachedHidden g_cacheHidden[32];
 int g_cacheHiddenCount = 0;
 int g_hiddenHand = -1; // whose cluster is collapsed right now (game thread)
+int g_offSleeveCollapsedHand = -1;
 // Session 29: hoisted out of drive() (it was a function-static there) so
 // release() can restore a collapsed sleeve. A latch only drive() could see was
 // a latch only drive() could ever clear - which is precisely the shape of bug
@@ -1205,7 +1206,8 @@ bool barrel_ref_axis(float d0[3]) {
     return true;
 }
 
-bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand) {
+bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand,
+           const GamePose* offHandPose) {
     // Telemetry window: opened here (the once-per-frame pass-1 path) so every
     // module's lines for one sample land together in the log.
     if (g_telemetry.load(std::memory_order_relaxed)) {
@@ -1408,7 +1410,22 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // below sets p/q but never touches .s, so a zero scale left behind would
     // keep the incoming hand invisible.
     bool hideInactive = g_hideInactive.load(std::memory_order_relaxed);
-    if (g_hiddenHand >= 0 && (!hideInactive || g_hiddenHand == hand)) {
+    const bool offTrack = offHandPose != nullptr;
+    if (g_offSleeveCollapsedHand >= 0 &&
+        (!offTrack || g_offSleeveCollapsedHand != 1 - hand)) {
+        const int old = g_offSleeveCollapsedHand;
+        const int* oldSleeve = old == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+        const size_t oldCount = old == 1 ? _countof(patterns::kBoneRSleeve)
+                                         : _countof(patterns::kBoneLSleeve);
+        for (size_t k = 0; k < oldCount; ++k) {
+            const int idx = oldSleeve[k];
+            if (idx < 0 || idx >= g_boneCount) continue;
+            write_n(g_bones[idx].p, g_ref[idx].p, 12);
+            write_n(g_bones[idx].s, g_ref[idx].s, 12);
+        }
+        g_offSleeveCollapsedHand = -1;
+    }
+    if (g_hiddenHand >= 0 && (!hideInactive || g_hiddenHand == hand || offTrack)) {
         restore_hidden(g_hiddenHand);
         g_hiddenHand = -1;
     }
@@ -1547,6 +1564,71 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
         if (wantS) memcpy(cb.s, sv, 12);
     }
 
+    // Drive the other controller's hand cluster through the same actor-space
+    // transform. Keep the attached right-hand weapon parked when that hand is
+    // the off hand; otherwise tracking the hand would make the equipped gun
+    // appear as a second weapon.
+    if (offTrack) {
+        const int oh = 1 - hand;
+        int ofirst = 0, olast = 0, oanchor = 0;
+        cluster_of(oh, &ofirst, &olast, &oanchor);
+        if (ofirst < 0 || olast >= g_boneCount || oanchor < ofirst || oanchor > olast)
+            return false;
+        float oq[4], oqc[4], opWorld[3] = {offHandPose->loc.x - actorLoc[0],
+                                           offHandPose->loc.y - actorLoc[1],
+                                           offHandPose->loc.z - actorLoc[2]};
+        ue_rot_to_quat(offHandPose->rot, oq);
+        quat_mul(qaInv, oq, oqc);
+        float opc[3];
+        qts_rotate(qaInv, opWorld, opc);
+        const float* opa = g_ref[oanchor].p;
+        for (int i = ofirst; i <= olast && i < g_boneCount; ++i) {
+            if (i < 0) continue;
+            // The weapon attachment is not part of the tracked off hand. Park
+            // it below the actor while retaining its authored scale.
+            if (oh == 1 && i == patterns::kBoneWeaponAttach) {
+                const float farBelow[3] = {0.0f, 0.0f, -5000.0f};
+                write_n(g_bones[i].p, farBelow, 12);
+                if (g_cacheCount < static_cast<int>(_countof(g_cache))) {
+                    CachedBone& cb = g_cache[g_cacheCount++];
+                    cb.idx = i; memcpy(cb.p, farBelow, 12);
+                    memcpy(cb.q, g_ref[i].q, 16); cb.writeScale = false;
+                }
+                continue;
+            }
+            float rel[3] = {g_ref[i].p[0] - opa[0], g_ref[i].p[1] - opa[1],
+                            g_ref[i].p[2] - opa[2]};
+            float rot[3], p[3], q[4];
+            qts_rotate(oqc, rel, rot);
+            p[0] = opc[0] + rot[0]; p[1] = opc[1] + rot[1]; p[2] = opc[2] + rot[2];
+            quat_mul(oqc, g_ref[i].q, q);
+            if (!write_n(g_bones[i].p, p, 12) || !write_n(g_bones[i].q, q, 16)) {
+                g_skelInst = nullptr; g_cacheMs = 0; return false;
+            }
+            if (g_cacheCount < static_cast<int>(_countof(g_cache))) {
+                CachedBone& cb = g_cache[g_cacheCount++];
+                cb.idx = i; memcpy(cb.p, p, 12); memcpy(cb.q, q, 16); cb.writeScale = false;
+            }
+        }
+        // The engine-owned forearm sleeve remains at its eye-anchor pose; hide
+        // those stub bones while the controller hand itself is tracked.
+        const int* osleeve = oh == 1 ? patterns::kBoneRSleeve : patterns::kBoneLSleeve;
+        const size_t osleeveCount = oh == 1 ? _countof(patterns::kBoneRSleeve)
+                                            : _countof(patterns::kBoneLSleeve);
+        static const float zeroScale[3] = {0.0f, 0.0f, 0.0f};
+        for (size_t k = 0; k < osleeveCount; ++k) {
+            const int idx = osleeve[k];
+            if (idx < 0 || idx >= g_boneCount) continue;
+            write_n(g_bones[idx].p, opc, 12);
+            write_n(g_bones[idx].s, zeroScale, 12);
+            if (g_cacheSleeveCount < static_cast<int>(_countof(g_cacheSleeve))) {
+                CachedSleeve& cs = g_cacheSleeve[g_cacheSleeveCount++];
+                cs.idx = idx; memcpy(cs.p, opc, 12); memcpy(cs.s, zeroScale, 12);
+            }
+        }
+        g_offSleeveCollapsedHand = oh;
+    }
+
     // Sleeve collapse: zero scale hides the geometry; pinning the position at
     // the target keeps any residual skin inside the fist instead of smeared
     // toward the shoulder. On the off-transition the reference values are
@@ -1590,7 +1672,7 @@ bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int ha
     // near-plane, and zero would be 1/0), so the equipped gun is parked far
     // below the actor in component space and frustum-culled instead.
     g_cacheHiddenCount = 0;
-    if (hideInactive) {
+    if (hideInactive && !offTrack) {
         const int ih = 1 - hand;
         int hFirst = 0, hLast = 0, hAnchor = 0;
         cluster_of(ih, &hFirst, &hLast, &hAnchor);

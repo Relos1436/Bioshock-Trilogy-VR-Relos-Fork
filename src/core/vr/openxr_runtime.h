@@ -64,6 +64,10 @@ bool peek_head_pose(HeadPose& out);
 // `aimPose` true = the runtime's pointing ray (aiming), false = the grip pose
 // (hand/weapon placement).
 bool get_hand_pose(int hand, bool aimPose, HeadPose& out);
+bool get_raw_hand_pose(int hand, bool aimPose, HeadPose& out);
+float hand_squeeze(int hand);
+void reserve_grip_bumper(int hand, bool on);
+void haptic_pulse(int hand, float amplitude, int durationMs);
 
 // --- Session 20: vrrec record+replay support ---------------------------------
 // Sim overlay on the hand-pose funnel: while armed, every consumer of

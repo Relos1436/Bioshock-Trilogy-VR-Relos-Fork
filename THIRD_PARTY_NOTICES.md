@@ -17,6 +17,36 @@ Vendored copies (not submodules) under `third_party/`:
 
 Adapted code:
 
+- **BioShock Trilogy VR Left-Hand Edition by Owloeb**
+  (https://github.com/Owloeb/bioshock-trilogy-vr-lefthand, commit
+  `7734c62306f386b38845ef8a35d6fefaf93065c5`, MIT) - independent off-hand
+  tracking, controller haptics, recoil feedback, and plasmid calibration were
+  used as implementation references. This fork adapts those features without
+  the source branch's two-handed-grip system. Required MIT notice:
+
+  ```text
+  MIT License
+  Copyright (c) 2026 bioshock-vr contributors
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+  ```
+
 - **Bioshock-Remastered-VR by BioVRDev** (https://github.com/BioVRDev/Bioshock-Remastered-VR,
   no license file published) - the SteamVR shim in `src/tools/ovrshim/` is adapted from their
   `OpenXRShim/` module (OpenXR-on-OpenVR). Copied and adapted with the author's explicit

@@ -22,9 +22,9 @@ The mod is a DLL injected into the game's process. It hooks the game's DirectX 1
 the Vengeance engine (Unreal Engine 2.5 lineage) camera path, and drives them from an OpenXR
 session. No game files are modified and no game assets are distributed.
 
-> **Status:** playable. Working today: full-rate stereo rendering, 6DOF head tracking,
+> **Status:** playable. In-headset verified: full-rate stereo rendering, 6DOF head tracking,
 > motion-controller aim with a laser (right hand = weapons, left hand = plasmids), the visible
-> viewmodel following the controller with the inactive hand hidden, **per-weapon aim profiles**
+> viewmodel following the controller, **per-weapon aim profiles**
 > (every weapon keeps its own laser calibration and swaps it in the moment you equip it),
 > body-follows-head movement ("walk where you look"), the game HUD (health/EVE/ammo - and the
 > pause menu) on a readable floating panel in VR, VR-standard controller bindings with
@@ -32,6 +32,10 @@ session. No game files are modified and no game assets are distributed.
 > that persist. The shipped defaults ARE a full calibration (aim trims, per-weapon profiles,
 > body follow) tuned in-headset on a Quest 3. See [docs/STATUS.md](docs/STATUS.md) for the
 > current state and [docs/ROADMAP.md](docs/ROADMAP.md) for what is next.
+>
+> This fork also adds independently tracked off-hand, visual weapon recoil and controller
+> haptics, plus plasmid aim calibration and an aim dot. They compile in the x86 build but
+> still need headset validation.
 
 ## Requirements
 

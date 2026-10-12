@@ -28,6 +28,7 @@
 #include <imgui.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -145,6 +146,23 @@ std::atomic<float> g_laserNearM{0.30f}, g_laserFarM{6.0f}, g_laserSizeDeg{0.7f};
 std::atomic<bool> g_dot{false};
 std::atomic<float> g_dotDistM{5.0f};
 std::atomic<float> g_dotSizeDeg{0.5f};
+// Plasmid calibration is adapted from the feature in Owloeb's MIT left-hand
+// edition, commit 7734c62 (see THIRD_PARTY_NOTICES.md), and lives separately
+// from vrpreset.ini so loading
+// a general aim preset cannot overwrite it.
+std::atomic<bool> g_plasmidDot{true};
+std::atomic<bool> g_calArmed{false};
+std::atomic<uint64_t> g_calArmedMs{0};
+std::atomic<int> g_calReset{0};
+bool g_calLoaded = false; // loaded on the game thread
+std::atomic<bool> g_calValid{false};
+std::atomic<float> g_calPitch{0.0f}, g_calYaw{0.0f};
+std::mutex g_calFileMx;
+bool g_calHaveTarget = false;
+float g_calTarget[3]{};
+bool g_calSqueeze = false;
+uint64_t g_playerShotCount = 0;
+uint64_t g_playerAbilityCount = 0;
 constexpr float kIdentQuat[4] = {0.0f, 0.0f, 0.0f, 1.0f};
 std::atomic<int32_t> g_dumpBudget{0}; // per-seam detailed log budget
 
@@ -163,6 +181,53 @@ bool g_gameplayView = false;
 // above g_lastCtx's definition - can turn Unreal units into centimetres for the
 // watch line. A displacement is only meaningful next to the scale it lives in.
 float g_worldScaleCache = 100.0f;
+
+void plasmid_cal_path(wchar_t* out, size_t n) {
+    swprintf_s(out, n, L"%s\\aim_plasmid.ini", bvr::log::data_dir());
+}
+
+void load_plasmid_cal() {
+    std::lock_guard<std::mutex> lock(g_calFileMx);
+    if (g_calLoaded) return;
+    g_calLoaded = true;
+    wchar_t path[MAX_PATH];
+    plasmid_cal_path(path, MAX_PATH);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"r") != 0 || !f) return;
+    char line[128];
+    while (fgets(line, sizeof line, f)) {
+        float p = 0.0f, y = 0.0f;
+        if (sscanf_s(line, "pitch=%f", &p) == 1) { g_calPitch.store(p); g_calValid.store(true); }
+        else if (sscanf_s(line, "yaw=%f", &y) == 1) { g_calYaw.store(y); g_calValid.store(true); }
+        else if (sscanf_s(line, "plasmidDot=%f", &p) == 1) g_plasmidDot.store(p != 0.0f);
+    }
+    fclose(f);
+}
+
+void save_plasmid_cal() {
+    std::lock_guard<std::mutex> lock(g_calFileMx);
+    wchar_t path[MAX_PATH];
+    plasmid_cal_path(path, MAX_PATH);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path, L"w") != 0 || !f) return;
+    fprintf(f, "# BioShock VR plasmid aim calibration\nplasmidDot=%d\n",
+            g_plasmidDot.load(std::memory_order_relaxed) ? 1 : 0);
+    if (g_calValid.load(std::memory_order_relaxed))
+        fprintf(f, "pitch=%.2f\nyaw=%.2f\n", g_calPitch.load(std::memory_order_relaxed),
+                g_calYaw.load(std::memory_order_relaxed));
+    fclose(f);
+}
+
+float effective_pitch(int hand) {
+    return hand == 0 && g_calValid.load(std::memory_order_relaxed)
+               ? g_calPitch.load(std::memory_order_relaxed)
+                                    : g_pitchOffsetDeg[hand].load(std::memory_order_relaxed);
+}
+float effective_yaw(int hand) {
+    return hand == 0 && g_calValid.load(std::memory_order_relaxed)
+               ? g_calYaw.load(std::memory_order_relaxed)
+                                    : g_yawOffsetDeg[hand].load(std::memory_order_relaxed);
+}
 
 // Self-expiring synthetic aim, mirroring the xinput_bridge test slots: the
 // command file is polled at 1 Hz, so a hold has to outlive its command inside
@@ -527,6 +592,10 @@ bool substitute(Slot& slot, Hand h, float* const* out, int count) {
 // AWeapon::GetPerfectFireStart(FVector* outA, FVector* outB, void* outC).
 // `this` is the weapon; [this+0x454] is the pawn holding it, which is how a
 // player shot is told from a splicer's.
+std::atomic<uint32_t> g_playerShots{0};
+std::atomic<uint32_t> g_playerAbilities{0};
+std::atomic<uint64_t> g_lastPlayerShotMs{0};
+std::atomic<uint64_t> g_lastPlayerAbilityMs{0};
 void __fastcall WeaponFireDetour(void* self, void* edx, float* outA, float* outB, float* outC) {
     using WeaponFireFn = void(__fastcall*)(void*, void*, float*, float*, float*);
     reinterpret_cast<WeaponFireFn>(g_weaponFire.original)(self, edx, outA, outB, outC);
@@ -538,7 +607,13 @@ void __fastcall WeaponFireDetour(void* self, void* edx, float* outA, float* outB
     read12(outC, c);
 
     const char* note = "";
-    if (g_subWeapon.load(std::memory_order_relaxed) && owner_is_player_pawn(self)) {
+    if (owner_is_player_pawn(self)) {
+        const uint64_t now = GetTickCount64();
+        const uint64_t last = g_lastPlayerShotMs.exchange(now, std::memory_order_relaxed);
+        if (now - last > 40) g_playerShots.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (g_enabled.load(std::memory_order_relaxed) &&
+        g_subWeapon.load(std::memory_order_relaxed) && owner_is_player_pawn(self)) {
         Hand h = hand_for_object(self, Hand::Right);
         float* outs[3] = {outA, outB, outC};
         bool subbed = substitute(g_weaponFire, h, outs, 3);
@@ -567,7 +642,13 @@ void __fastcall AbilityFireDetour(void* self, void* edx, void* instigator, float
     read12(outC, c);
 
     const char* note = "";
-    if (g_subAbility.load(std::memory_order_relaxed) && is_player_pawn(instigator)) {
+    if (is_player_pawn(instigator)) {
+        const uint64_t now = GetTickCount64();
+        const uint64_t last = g_lastPlayerAbilityMs.exchange(now, std::memory_order_relaxed);
+        if (now - last > 40) g_playerAbilities.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (g_enabled.load(std::memory_order_relaxed) &&
+        g_subAbility.load(std::memory_order_relaxed) && is_player_pawn(instigator)) {
         // Plasmids are the left hand; the wrench's melee ability also lands
         // here, and the trigger-keyed map moves it back to the right hand the
         // first time it swings.
@@ -1130,6 +1211,10 @@ void init(const bvr::pattern_scan::ProcessImage& image, const patterns::Symbols&
     load_weapon_profiles(); // a user's weapons.ini overrides the seeds key by key
     BVR_LOG("[aim] init: weapon fire-start=%p ability fire-start=%p", g_syms.weaponFireStart,
             g_syms.abilityFireStart);
+    // Keep the pass-through fire seams available for recoil/haptic event
+    // counts even when controller aim substitution is switched off. Detours
+    // only substitute while g_enabled is true.
+    if (!install_all()) BVR_LOG("[aim] fire-feedback hooks unavailable");
 }
 
 void note_preset_baseline() {
@@ -1216,6 +1301,7 @@ static bool g_haveCtx = false;
 
 void on_calcview(const FrameContext& ctx) {
     uint64_t now = GetTickCount64();
+    load_plasmid_cal();
     g_rayStampMs = now;
     g_lastCtx = ctx;
     g_haveCtx = true;
@@ -1232,7 +1318,7 @@ void on_calcview(const FrameContext& ctx) {
         }
     } else if (pending == 0) {
         g_enabled.store(false, std::memory_order_relaxed);
-        if (!g_probe.load(std::memory_order_relaxed)) disable_all();
+        // The pass-through hooks remain for viewmodel/haptic feedback.
         BVR_LOG("[aim] OFF (overlay) - engine aim restored");
     }
 
@@ -1307,8 +1393,7 @@ void on_calcview(const FrameContext& ctx) {
         // The trimmed chain is a pure function in frame_context.h, shared
         // with `vraim synccheck` (roll forced 0 there - the camera owns roll).
         GamePose gp = ray_pose_from_xr(ctx, pos, quat,
-                                       g_pitchOffsetDeg[i].load(std::memory_order_relaxed),
-                                       g_yawOffsetDeg[i].load(std::memory_order_relaxed));
+                                       effective_pitch(i), effective_yaw(i));
         out.origin = gp.loc;
         out.rot = gp.rot;
 
@@ -1336,6 +1421,69 @@ void on_calcview(const FrameContext& ctx) {
         out.valid = true;
     }
 
+    if (g_calReset.exchange(0, std::memory_order_relaxed)) {
+        g_calValid.store(false, std::memory_order_relaxed);
+        g_calPitch.store(0.0f, std::memory_order_relaxed);
+        g_calYaw.store(0.0f, std::memory_order_relaxed);
+        save_plasmid_cal();
+        BVR_LOG("[aim] plasmid aim calibration reset");
+    }
+    if (g_calArmed.load(std::memory_order_relaxed) &&
+        now - g_calArmedMs.load(std::memory_order_relaxed) > 30000) {
+        g_calArmed.store(false, std::memory_order_relaxed);
+        g_calHaveTarget = false;
+        bvr::vr::reserve_grip_bumper(0, false);
+        BVR_LOG("[aim] plasmid aim calibration timed out");
+    }
+    if (!g_calArmed.load(std::memory_order_relaxed)) {
+        g_calHaveTarget = false;
+        g_calSqueeze = false;
+    } else if (ctx.vrDriving && g_gameplayView) {
+        bvr::vr::HeadPose head{};
+        if (!g_calHaveTarget && bvr::vr::peek_head_pose(head)) {
+            const float fwd[3] = {0.0f, 0.0f, -1.0f};
+            float dir[3];
+            quat_rotate(head.qx, head.qy, head.qz, head.qw, fwd, dir);
+            g_calTarget[0] = head.px + dir[0] * 4.0f;
+            g_calTarget[1] = head.py + dir[1] * 4.0f;
+            g_calTarget[2] = head.pz + dir[2] * 4.0f;
+            g_calHaveTarget = true;
+        }
+        // Grip is the calibration confirm. Consume it so this press does not
+        // also switch plasmids; the reservation self-expires if the frame loop
+        // stops refreshing it.
+        bvr::vr::reserve_grip_bumper(0, true);
+        const float squeeze = bvr::vr::hand_squeeze(0);
+        const bool was = g_calSqueeze;
+        g_calSqueeze = was ? squeeze >= 0.55f : squeeze >= 0.70f;
+        bvr::vr::HeadPose hand{};
+        if (g_calHaveTarget && g_calSqueeze && !was &&
+            bvr::vr::get_raw_hand_pose(0, g_useAimPose.load(std::memory_order_relaxed), hand)) {
+            float to[3] = {g_calTarget[0] - hand.px, g_calTarget[1] - hand.py,
+                           g_calTarget[2] - hand.pz};
+            const float len = sqrtf(to[0] * to[0] + to[1] * to[1] + to[2] * to[2]);
+            if (len > 0.2f) {
+                for (float& v : to) v /= len;
+                float local[3];
+                quat_rotate(-hand.qx, -hand.qy, -hand.qz, hand.qw, to, local);
+                const float y = fmaxf(-1.0f, fminf(1.0f, local[1]));
+                g_calPitch.store(asinf(y) * kRadToDeg, std::memory_order_relaxed);
+                g_calYaw.store(atan2f(local[0], -local[2]) * kRadToDeg,
+                               std::memory_order_relaxed);
+                g_calValid.store(true, std::memory_order_relaxed);
+                save_plasmid_cal();
+                g_calArmed.store(false, std::memory_order_relaxed);
+                g_calHaveTarget = false;
+                bvr::vr::haptic_pulse(0, 0.8f, 120);
+                BVR_LOG("[aim] plasmid aim calibrated: pitch %.1f yaw %.1f",
+                        g_calPitch.load(std::memory_order_relaxed),
+                        g_calYaw.load(std::memory_order_relaxed));
+            }
+        }
+    } else {
+        bvr::vr::reserve_grip_bumper(0, false);
+    }
+
     // Publish the laser for the render thread. It reads the aim pose itself at
     // submit time (later than this, so the dots are as fresh as the frame), and
     // takes the trim from here so the beam and the bullet are one ray.
@@ -1343,8 +1491,8 @@ void on_calcview(const FrameContext& ctx) {
     lc.enabled = g_laser.load(std::memory_order_relaxed) && ctx.vrDriving && g_gameplayView;
     lc.hand = hands::active_hand();
     int lh = lc.hand == 0 ? 0 : 1;
-    lc.pitchTrimDeg = g_pitchOffsetDeg[lh].load(std::memory_order_relaxed);
-    lc.yawTrimDeg = g_yawOffsetDeg[lh].load(std::memory_order_relaxed);
+    lc.pitchTrimDeg = effective_pitch(lh);
+    lc.yawTrimDeg = effective_yaw(lh);
     lc.posFwdCm = g_posFwdCm[lh].load(std::memory_order_relaxed);
     lc.posRightCm = g_posRightCm[lh].load(std::memory_order_relaxed);
     lc.posUpCm = g_posUpCm[lh].load(std::memory_order_relaxed);
@@ -1373,7 +1521,8 @@ void on_calcview(const FrameContext& ctx) {
     // visible if and only if a shot fired right now would be substituted -
     // which makes the dot an instrument as well as a sight.
     bvr::vr::AimDotConfig dc{};
-    dc.enabled = g_dot.load(std::memory_order_relaxed);
+    dc.enabled = g_dot.load(std::memory_order_relaxed) ||
+                 (lh == 0 && g_plasmidDot.load(std::memory_order_relaxed));
     dc.sizeDeg = g_dotSizeDeg.load(std::memory_order_relaxed);
     const Ray& dr = g_ray[lh];
     if (dc.enabled && g_enabled.load(std::memory_order_relaxed) && g_gameplayView && dr.valid) {
@@ -1401,6 +1550,13 @@ void on_calcview(const FrameContext& ctx) {
                     err < 0.05f ? "EXACT, the dot is the fire-seam point"
                                 : "NOT EXACT - do not trust the dot as calibration");
         }
+    }
+    if (g_calArmed.load(std::memory_order_relaxed) && g_calHaveTarget) {
+        dc.enabled = true;
+        dc.valid = true;
+        dc.posXr[0] = g_calTarget[0];
+        dc.posXr[1] = g_calTarget[1];
+        dc.posXr[2] = g_calTarget[2];
     }
     bvr::vr::set_aim_dot(dc);
 }
@@ -1510,7 +1666,7 @@ void handle_command(const char* args) {
         log_status();
     } else if (strcmp(verb, "off") == 0) {
         g_enabled.store(false, std::memory_order_relaxed);
-        if (!g_probe.load(std::memory_order_relaxed)) disable_all();
+        // The pass-through hooks remain for viewmodel/haptic feedback.
         BVR_LOG("[aim] OFF - engine aim restored");
     } else if (strcmp(verb, "scan") == 0) {
         char cls[48] = {}, fn[48] = {};
@@ -1536,7 +1692,7 @@ void handle_command(const char* args) {
             if (g_dumpBudget.load(std::memory_order_relaxed) <= 0) set_dump(24);
             BVR_LOG("[aim] probe ON (telemetry only; `vraim dump <n>` for more lines)");
         } else {
-            if (!g_enabled.load(std::memory_order_relaxed)) disable_all();
+            // Keep pass-through hooks active for viewmodel/haptic feedback.
             BVR_LOG("[aim] probe off");
         }
     } else if (strcmp(verb, "dump") == 0) {
@@ -1770,6 +1926,10 @@ bool weapon_key_is(const char* name) {
     return name && g_weaponKey == name;
 }
 
+const char* active_weapon_key() { return g_weaponKey.empty() ? "" : g_weaponKey.c_str(); }
+uint32_t player_shot_count() { return g_playerShots.load(std::memory_order_relaxed); }
+uint32_t player_ability_count() { return g_playerAbilities.load(std::memory_order_relaxed); }
+
 float trim_pitch_deg(int hand) {
     return g_pitchOffsetDeg[hand == 0 ? 0 : 1].load(std::memory_order_relaxed);
 }
@@ -1829,6 +1989,30 @@ void draw_debug_ui() {
     bool useAim = g_useAimPose.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Use the runtime AIM pose (off = grip pose)", &useAim))
         g_useAimPose.store(useAim, std::memory_order_relaxed);
+    if (g_calArmed.load(std::memory_order_relaxed)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f),
+                           "Point your left hand at the dot and squeeze its grip to calibrate.");
+        if (ImGui::Button("Cancel plasmid aim calibration"))
+            g_calArmed.store(false, std::memory_order_relaxed);
+    } else {
+        if (ImGui::Button("Calibrate plasmid aim")) {
+            g_calArmedMs.store(GetTickCount64(), std::memory_order_relaxed);
+            g_calArmed.store(true, std::memory_order_relaxed);
+        }
+        if (g_calValid.load(std::memory_order_relaxed)) {
+            ImGui::SameLine();
+            if (ImGui::Button("Reset plasmid aim")) g_calReset.store(1, std::memory_order_relaxed);
+            ImGui::SameLine();
+            ImGui::Text("calibrated: pitch %.1f yaw %.1f",
+                        g_calPitch.load(std::memory_order_relaxed),
+                        g_calYaw.load(std::memory_order_relaxed));
+        }
+    }
+    bool plasmidDot = g_plasmidDot.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Aim dot for plasmids", &plasmidDot)) {
+        g_plasmidDot.store(plasmidDot, std::memory_order_relaxed);
+        save_plasmid_cal();
+    }
     // Per-hand trims (session 16 part 3): R = weapon, L = plasmid.
     // Range +-90 since v0.3.0: the user's left-wrist posture pinned the old
     // +-30 cap (their saved L yaw sat at exactly 30.0 = the slider max).
@@ -1844,6 +2028,8 @@ void draw_debug_ui() {
     float ly = g_yawOffsetDeg[0].load(std::memory_order_relaxed);
     if (ImGui::SliderFloat("L aim yaw trim (deg)", &ly, -90.0f, 90.0f))
         g_yawOffsetDeg[0].store(ly, std::memory_order_relaxed);
+    if (g_calValid.load(std::memory_order_relaxed))
+        ImGui::TextDisabled("Plasmid calibration overrides the left aim trims.");
 
     // Ray ORIGIN offsets (session 18 part 2): move the laser + fire origin to
     // line up with the controller and the tuned model. Selector like the

@@ -36,6 +36,7 @@
 #include <imgui.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -49,6 +50,15 @@ std::atomic<int> g_pendingEnable{-1}; // overlay -> game thread (see aim.cpp)
 std::atomic<int> g_mode{2};           // 0 = gun (inert), 1 = hands (actor pin,
                                       // retired), 2 = bones (M7-v2, default)
 std::atomic<bool> g_useAimPose{true}; // aim pose = the ray the laser/bullet use
+// Independent off-hand tracking adapted for this branch's AHands bone clusters
+// from Owloeb's MIT left-hand edition (see THIRD_PARTY_NOTICES.md).
+std::atomic<bool> g_trackOffHand{true};
+std::atomic<bool> g_recoilOn{true};
+std::atomic<float> g_recoilStrength{1.0f};
+uint32_t g_seenShots = 0, g_seenAbilities = 0;
+uint64_t g_recoilFrameMs = 0;
+float g_recoilPitch = 0.0f, g_recoilYaw = 0.0f, g_recoilBackCm = 0.0f;
+float g_recoilTargetPitch = 0.0f, g_recoilTargetYaw = 0.0f, g_recoilTargetBackCm = 0.0f;
 std::atomic<int> g_handMode{2};       // 0 left, 1 right, 2 auto
 std::atomic<int> g_autoHand{1};       // the latched auto choice
 // Model offsets, PER HAND (0 left / 1 right, same convention as aim.cpp): the
@@ -405,6 +415,9 @@ void save_config() {
     fprintf(f, "# suffix-less key (posFwdCm=...) still loads and applies to BOTH hands.\n");
     fprintf(f, "mode=%d\n", g_mode.load(std::memory_order_relaxed));
     fprintf(f, "aimPose=%d\n", g_useAimPose.load(std::memory_order_relaxed) ? 1 : 0);
+    fprintf(f, "trackOffHand=%d\n", g_trackOffHand.load(std::memory_order_relaxed) ? 1 : 0);
+    fprintf(f, "recoil=%d\n", g_recoilOn.load(std::memory_order_relaxed) ? 1 : 0);
+    fprintf(f, "recoilStrength=%.2f\n", g_recoilStrength.load(std::memory_order_relaxed));
     for (int h = 0; h < 2; ++h) {
         const char* s = h == 0 ? "L" : "R";
         fprintf(f, "posFwdCm%s=%.2f\n", s, g_posFwdCm[h].load(std::memory_order_relaxed));
@@ -453,6 +466,12 @@ void load_config() {
             g_mode.store(m < 0 ? 0 : m > 2 ? 2 : m, std::memory_order_relaxed);
         }
         else if (strcmp(key, "aimPose") == 0) g_useAimPose.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "trackOffHand") == 0)
+            g_trackOffHand.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "recoil") == 0) g_recoilOn.store(v != 0.0f, std::memory_order_relaxed);
+        else if (strcmp(key, "recoilStrength") == 0)
+            g_recoilStrength.store(v < 0.0f ? 0.0f : v > 2.5f ? 2.5f : v,
+                                   std::memory_order_relaxed);
         else if (store_hand_key(key, "posFwdCm", g_posFwdCm, v)) {}
         else if (store_hand_key(key, "posRightCm", g_posRightCm, v)) {}
         else if (store_hand_key(key, "posUpCm", g_posUpCm, v)) {}
@@ -741,10 +760,89 @@ void on_calcview(const FrameContext& ctx) {
         // culling, correct engine-side FX anchoring) and the hand CLUSTER
         // moves to the controller instead.
         gp.loc = {loc[0], loc[1], loc[2]};
+        // Fire feedback only changes the rendered pose. The aim ray and game
+        // fire parameters remain sourced from the controller.
+        if (hand == 1) {
+            const uint32_t shots = aim::player_shot_count();
+            const uint32_t delta = shots - g_seenShots;
+            g_seenShots = shots;
+            const char* key = aim::active_weapon_key();
+            float pitch = 0.0f, yaw = 0.0f, back = 0.0f;
+            if (strcmp(key, "Shotgun") == 0) { pitch = 9.0f; yaw = 1.1f; back = 4.5f; }
+            else if (strcmp(key, "MachineGun") == 0) { pitch = 2.0f; yaw = 0.8f; back = 1.2f; }
+            else if (strcmp(key, "Pistol") == 0) { pitch = 4.5f; yaw = 0.8f; back = 1.8f; }
+            else if (strcmp(key, "GrenadeLauncher") == 0) { pitch = 8.0f; yaw = 0.6f; back = 4.0f; }
+            else if (strcmp(key, "Crossbow") == 0) { pitch = 3.0f; yaw = 0.3f; back = 1.4f; }
+            else if (strcmp(key, "ChemicalThrower") == 0) { pitch = 0.25f; yaw = 0.3f; back = 0.2f; }
+            else if (strcmp(key, "ResearchCamera") == 0) { pitch = yaw = back = 0.0f; }
+            if (delta && delta < 8 && g_recoilOn.load(std::memory_order_relaxed)) {
+                const float strength = g_recoilStrength.load(std::memory_order_relaxed);
+                g_recoilTargetPitch += pitch * strength * delta;
+                g_recoilTargetYaw += yaw * strength * delta;
+                g_recoilTargetBackCm += back * strength * delta;
+                if (g_recoilTargetPitch > 26.0f) g_recoilTargetPitch = 26.0f;
+                if (g_recoilTargetBackCm > 9.0f) g_recoilTargetBackCm = 9.0f;
+                bvr::vr::haptic_pulse(1, 0.7f, 45);
+            }
+        }
+        const uint32_t abilities = aim::player_ability_count();
+        if (abilities != g_seenAbilities) {
+            g_seenAbilities = abilities;
+            if (g_recoilOn.load(std::memory_order_relaxed)) {
+                if (hand == 1 && aim::weapon_key_is("Wrench"))
+                    bvr::vr::haptic_pulse(1, 0.85f, 70);
+                else if (hand == 0)
+                    bvr::vr::haptic_pulse(0, 0.6f, 90);
+            }
+        }
+        const uint64_t recoilNow = GetTickCount64();
+        float dt = g_recoilFrameMs ? static_cast<float>(recoilNow - g_recoilFrameMs) / 1000.0f : 0.0f;
+        g_recoilFrameMs = recoilNow;
+        if (dt > 0.1f) dt = 0.1f;
+        const float decay = expf(-dt / 0.16f);
+        const float chase = 1.0f - expf(-dt / 0.012f);
+        g_recoilTargetPitch *= decay; g_recoilPitch += (g_recoilTargetPitch - g_recoilPitch) * chase;
+        g_recoilTargetYaw *= decay; g_recoilYaw += (g_recoilTargetYaw - g_recoilYaw) * chase;
+        g_recoilTargetBackCm *= decay;
+        g_recoilBackCm += (g_recoilTargetBackCm - g_recoilBackCm) * chase;
+        gp.rot.pitch += static_cast<int32_t>(g_recoilPitch * kRotUnitsPerDegree);
+        gp.rot.yaw += static_cast<int32_t>(g_recoilYaw * kRotUnitsPerDegree);
+        float rf[3], rr[3], ru[3];
+        ue_rot_basis(gp.rot, rf, rr, ru);
+        const float backUU = g_recoilBackCm * ctx.worldScale / 100.0f;
+        gp.loc = {gp.loc.x - rf[0] * backUU, gp.loc.y - rf[1] * backUU,
+                  gp.loc.z - rf[2] * backUU};
         // The weapon-scale lane rides the same per-frame slot (session 61);
         // it no-ops at wscale 1.0 and drops itself on weapon switches.
         bones::wskel_drive();
-        if (!bones::drive(ctx, target, gp, hand)) return;
+        GamePose offGp{};
+        bool haveOffHand = false;
+        if (ctx.vrDriving && g_trackOffHand.load(std::memory_order_relaxed)) {
+            bvr::vr::HeadPose off{};
+            if (bvr::vr::get_hand_pose(1 - hand, g_useAimPose.load(std::memory_order_relaxed), off)) {
+                const float op[3] = {off.px, off.py, off.pz};
+                const float oq[4] = {off.qx, off.qy, off.qz, off.qw};
+                offGp = model_pose_from_xr(ctx, op, oq,
+                                           g_rotPitchDeg[1 - hand].load(std::memory_order_relaxed),
+                                           g_rotYawDeg[1 - hand].load(std::memory_order_relaxed),
+                                           g_rotRollDeg[1 - hand].load(std::memory_order_relaxed));
+                float of[3], ort[3], ou[3];
+                ue_rot_basis(offGp.rot, of, ort, ou);
+                const float scale = ctx.worldScale / 100.0f;
+                const int oh = 1 - hand;
+                offGp.loc = {offGp.loc.x + (of[0] * g_posFwdCm[oh].load(std::memory_order_relaxed) +
+                                             ort[0] * g_posRightCm[oh].load(std::memory_order_relaxed) +
+                                             ou[0] * g_posUpCm[oh].load(std::memory_order_relaxed)) * scale,
+                             offGp.loc.y + (of[1] * g_posFwdCm[oh].load(std::memory_order_relaxed) +
+                                             ort[1] * g_posRightCm[oh].load(std::memory_order_relaxed) +
+                                             ou[1] * g_posUpCm[oh].load(std::memory_order_relaxed)) * scale,
+                             offGp.loc.z + (of[2] * g_posFwdCm[oh].load(std::memory_order_relaxed) +
+                                             ort[2] * g_posRightCm[oh].load(std::memory_order_relaxed) +
+                                             ou[2] * g_posUpCm[oh].load(std::memory_order_relaxed)) * scale};
+                haveOffHand = true;
+            }
+        }
+        if (!bones::drive(ctx, target, gp, hand, haveOffHand ? &offGp : nullptr)) return;
     } else {
         uint8_t* p = static_cast<uint8_t*>(target);
         bool wrote = write12(p + patterns::kActorLocOffset, loc);
@@ -996,6 +1094,23 @@ void draw_debug_ui() {
     bool aimPose = g_useAimPose.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Align to the AIM ray (matches laser; off = grip pose)", &aimPose))
         g_useAimPose.store(aimPose, std::memory_order_relaxed);
+
+    bool trackOffHand = g_trackOffHand.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Track the off hand independently", &trackOffHand)) {
+        g_trackOffHand.store(trackOffHand, std::memory_order_relaxed);
+        save_config();
+    }
+
+    bool recoilOn = g_recoilOn.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Weapon recoil and controller haptics", &recoilOn)) {
+        g_recoilOn.store(recoilOn, std::memory_order_relaxed);
+        save_config();
+    }
+    float recoilStrength = g_recoilStrength.load(std::memory_order_relaxed);
+    if (ImGui::SliderFloat("Recoil strength", &recoilStrength, 0.0f, 2.5f)) {
+        g_recoilStrength.store(recoilStrength, std::memory_order_relaxed);
+        save_config();
+    }
 
     int hand = g_handMode.load(std::memory_order_relaxed);
     if (ImGui::RadioButton("left", &hand, 0)) g_handMode.store(0, std::memory_order_relaxed);

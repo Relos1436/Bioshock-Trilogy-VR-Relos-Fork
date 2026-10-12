@@ -32,7 +32,8 @@ void init(const bvr::pattern_scan::ProcessImage& image);
 // `handsActor` is the live AHands actor (validated by the caller). Game
 // thread, once per frame from hands::on_calcview. Returns false if the
 // skeleton could not be reached this frame (caller may fall back).
-bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand);
+bool drive(const FrameContext& ctx, void* handsActor, const GamePose& gp, int hand,
+           const GamePose* offHandPose = nullptr);
 
 // Re-write the values the last drive() produced. The stereo second pass runs
 // the ENGINE's CalcView again (which re-evaluates the skeleton over our

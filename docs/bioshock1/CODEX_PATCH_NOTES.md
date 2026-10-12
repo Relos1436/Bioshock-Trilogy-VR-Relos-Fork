@@ -36,6 +36,33 @@ the upstream fork network.
 - Engine research and runtime observations are recorded in
   `docs/bioshock1/ENGINE_NOTES.md`.
 
+## Requested VR features — 2026-10-12
+
+- Added independent tracking for the controller not currently driving the
+  equipped holdable. It uses that hand's own XR pose and saved model offsets;
+  the weapon attachment remains parked when the right hand is the off hand.
+  This does not include two-handed grip.
+- Added an in-game hands-menu toggle for off-hand tracking and saved it in
+  `hands.ini`.
+- Added visual recoil for supported gun classes and OpenXR haptics for gun
+  fire, plasmid casts, wrench attacks, and calibration success. Recoil changes
+  the rendered viewmodel pose only; it does not change the controller aim ray
+  or game damage logic. The recoil toggle and strength control are in the
+  hands menu.
+- Added left/plasmid-hand aim calibration and an aim-dot toggle for plasmids.
+  Calibration and dot preference are stored in `aim_plasmid.ini` in the mod's
+  data directory.
+- Feature attribution and the MIT license notice for the implementation
+  reference are in `THIRD_PARTY_NOTICES.md`.
+- Build status: all CMake Release targets compiled with Visual Studio 2026's
+  x86 toolchain. CMake's normal compiler probe failed with `C1902` in its
+  dependency wrapper, so the configure used the x86 compiler and explicitly
+  forced the CMake ABI probe; `dumpbin` verified the resulting DLL is PE32,
+  machine `0x014C` (x86). This is compile evidence only; no headset behavior
+  has been verified for these new features.
+
+— Codex
+
 ## User validation
 
 The user reports that the swing suppression appeared to work in a headset test.
