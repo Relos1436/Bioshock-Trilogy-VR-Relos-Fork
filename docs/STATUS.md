@@ -12,8 +12,11 @@ the changed files, installed build hashes, and validation boundary.
 
 The user reports in-headset that the wrench idle now appears fixed and that the
 menu and height control are usable. The user has not separately confirmed hit
-registration in the latest build. Next step for this branch: preserve these
-changes and their notes in the requested private GitHub copy.
+registration in the latest build. The source and notes are now pushed to the
+private standalone copy [Relos1436/bioshock-trilogy-vr-private](https://github.com/Relos1436/bioshock-trilogy-vr-private)
+at commit `c1262c542a4ad4a02d57cb9074b41d445dd32120`. GitHub does not permit a
+private fork of a public repository; this private copy retains the upstream
+history and is not connected to the upstream fork network.
 
 — Codex
 
@@ -11817,8 +11820,9 @@ THEN arm 1t):**
 - Recorded the wrench suppression, player-height control, overlay key fallback,
   build hashes, and latest headset feedback in `docs/bioshock1/CODEX_PATCH_NOTES.md`.
 - Updated this handoff with the current branch/base and validation boundary.
-- Prepared to publish the source and notes into a private standalone repository
-  because GitHub does not allow a private fork of a public repository.
+- Created the private standalone copy `Relos1436/bioshock-trilogy-vr-private`,
+  preserved the upstream history, and pushed the source and notes at commit
+  `c1262c542a4ad4a02d57cb9074b41d445dd32120`.
 
 — Codex
 
