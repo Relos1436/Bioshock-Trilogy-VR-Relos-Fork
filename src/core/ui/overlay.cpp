@@ -138,15 +138,23 @@ void on_present(IDXGISwapChain* swapchain) {
     }
     if (!g_rtv && !CreateRenderTarget(swapchain)) return;
 
-    // F10, edge-triggered (Insert was the original choice, but not every
-    // keyboard has it); the seam request lane covers harness toggling.
-    static bool wasDown = false;
-    bool isDown = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
-    if (isDown && !wasDown) {
+    // F10 is the primary menu key; Insert is a backup for keyboards that
+    // require a function-layer modifier. Log the edge so an unresponsive
+    // in-game menu can be distinguished from a key the game never received.
+    static bool wasF10Down = false;
+    static bool wasInsertDown = false;
+    const bool f10Down = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+    const bool insertDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
+    const bool f10Edge = f10Down && !wasF10Down;
+    const bool insertEdge = insertDown && !wasInsertDown;
+    if (f10Edge || insertEdge) {
         g_visible = !g_visible;
         ImGui::GetIO().MouseDrawCursor = g_visible;
+        BVR_LOG("overlay visibility %s via %s", g_visible ? "ON" : "off",
+                f10Edge ? "F10" : "Insert");
     }
-    wasDown = isDown;
+    wasF10Down = f10Down;
+    wasInsertDown = insertDown;
     int req = g_visibleRequest.exchange(-1, std::memory_order_relaxed);
     if (req >= 0) {
         g_visible = req != 0;

@@ -1,5 +1,22 @@
 # Project status
 
+## Codex working-tree handoff (2026-10-12) — Codex
+
+The BioShock Remastered wrench and calibration follow-up is on branch
+`codex/bs1-wrench-visual-suppression`, based on upstream v0.8.3 commit
+`41f004bc6a1e4fa8be0d0e0749f9ac5a0453e75e`. The working-tree changes cover
+physical swing pose suppression, idle wrench pose suppression, a saved player
+height correction in the F10 VR panel, overlay-key diagnostics, and supporting
+engine notes. See [CODEX_PATCH_NOTES.md](bioshock1/CODEX_PATCH_NOTES.md) for
+the changed files, installed build hashes, and validation boundary.
+
+The user reports in-headset that the wrench idle now appears fixed and that the
+menu and height control are usable. The user has not separately confirmed hit
+registration in the latest build. Next step for this branch: preserve these
+changes and their notes in the requested private GitHub copy.
+
+— Codex
+
 > Handoff file. Rewrite "Current state" and "Next steps" every session; append to the session log.
 
 ## The three games (one branch, one release line)
@@ -11794,6 +11811,16 @@ THEN arm 1t):**
 - Repo created and pushed: https://github.com/mohamad-balouza/bioshock-vr (public, MIT).
 
 ## Session log
+
+### 2026-10-12 — Codex private-copy preparation — Codex
+
+- Recorded the wrench suppression, player-height control, overlay key fallback,
+  build hashes, and latest headset feedback in `docs/bioshock1/CODEX_PATCH_NOTES.md`.
+- Updated this handoff with the current branch/base and validation boundary.
+- Prepared to publish the source and notes into a private standalone repository
+  because GitHub does not allow a private fork of a public repository.
+
+— Codex
 
 ### 2026-07-30 - session 29 (branch s29-b1r-cinematics-and-aim-dot): stage 3, accepted in-headset
 

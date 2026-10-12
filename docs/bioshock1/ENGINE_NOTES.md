@@ -859,6 +859,121 @@ so the engine restores itself. Freeze (+0x20) is kept as a diagnostic lever,
 not used by the drive - it also stops the rig's own animations, and whether it
 starves the anim notifies that drive firing is UNTESTED.
 
+### Physical wrench swing pose pin (2026-10-01) — Codex
+
+The v0.8.3 source composes the controller rotation with the current engine pose;
+the full wrench swing therefore remains visible. The candidate visual-only route
+is to save the ready right-hand cluster and use it as the pose reference only
+when the synthetic swing trigger is active and the current hands animation is
+`Swing_A_Wrench` or `Swing_B_Wrench`. Keep the engine animation channel and the
+actor/world transform running. Do not freeze the whole SkeletonInstance.
+
+Static derivation against the installed BioShock Remastered executable
+(SHA-256 `AEC21A0072CFDB15E4B525E2320C87256F14F16894F714272069270AD099A05B`,
+preferred image base `0x10900000`):
+
+- `ShockGame.U` declares `PlayerWeapon.HandsAnimationHandle` and the Wrench
+  defaults name the two hands swing clips above. The native Wrench update at
+  RVA `0x22D900` reads Wrench `+0x8F0`, then looks up that handle on the owning
+  hands actor's `SkeletonInstance`.
+- `SkeletonInstance` virtual `+0x34` resolves the requested handle. Its exact
+  lookup at RVA `0x5955F0` hashes into SkeletonInstance `+0x24` (12-byte entries,
+  bucket pointer `+0x30`, bucket count `+0x34`), follows entry `+0x00`, compares
+  handle `+0x04`, and reads the channel pointer `+0x08`. The selected channel
+  sample is at its sample-array pointer plus its current index (`+0x10`). This
+  is the same handle path the Wrench collision update uses, not a scan for a
+  guessed animation state.
+- The selected animation instance keeps its `SharedSkeletonAnimation*` at
+  `+0xAC`; `Actor.GetAnimationName` reads that resource's FName at `+0x04/+0x08`.
+  The shared-animation RTTI vtable is RVA `0xE1FD7C`. Name resolution goes
+  through the already validated `patterns::fname_text` helper. Unknown handles,
+  resource types, or names fail open and leave the game pose alone.
+- Separately, Wrench updater `0x22D900` reads playback time from the active
+  instance at `+0x08`, samples `PlayerCamera_WrenchSwingACollision` into a
+  temporary transform buffer, and builds the hit phantom from that sampled
+  transform and the hands actor's world matrix. It does not read the displayed
+  hands pose bank. Hit processing continues through `0x22CAB0`.
+
+Prototype behavior in `bones.cpp`: take one ready-pose snapshot during the
+gesture pulse; pin bones 27-44 once one of the two swing names is observed;
+continue pinning through blend-out; release after two fresh engine poses return
+inside the existing measured 6 UU / 12 degree idle envelope at the wrist and
+weapon-attach anchor. The controller transform is composed every frame as
+before. `vrbones wrenchpose on|off|status` provides an in-game A/B switch; it is
+on by default. Clear the snapshot on rig/weapon changes, world changes, and rig
+release.
+
+This is a design derivation plus a prototype; hit preservation, actual name
+resolution at runtime, timing, and blend-out must still pass simulator/game
+verification. The trigger merger cannot distinguish a physical pulse from a
+real trigger held at the same time, so an overlapping gesture/trigger is treated
+as gesture-originated if it produces the wrench swing while the pulse is open.
+
+### Shared player-height calibration in the VR panel (2026-10-11) — Codex
+
+The existing `Head offset up (UU)` control changes only the `CalcView` result.
+`FrameContext.baseZ` is captured from the engine camera before that offset, and
+the XR-to-game controller/aim transform uses that base. Therefore it is a camera
+trim, not a shared player-height correction.
+
+The new `Player height correction (cm)` slider in the F10 `VR camera` panel adds
+the same world-up delta to the driven camera and to `FrameContext.baseZ`. The
+delta is `centimeters * worldScale / 100`, so the UI remains in physical units
+when the world-scale calibration changes. `playerHeightCm` is persisted in
+`vrpreset.ini`, clamped to +/-100 cm on load, and defaults to zero for existing
+configs. It shifts the VR view, tracked hands, and aim mapping together; it does
+not move the game's pawn or collision capsule. This is a mod settings-panel
+control, not an entry in BioShock's native Options menu.
+
+The wrench class defaults in the installed `ShockGame.U` name two distinct
+resting clips: `FidgetWrench` and `FidgetSlapWrench`. The prototype now keeps
+the already-valid equipped pose reference instead of adopting evaluated hand
+poses while either clip is active. The animation instance and its clock remain
+running; this changes only the VR hand-pose reference, not weapon collision or
+attack notifications. It fails open if the equipped pose reference is not yet
+valid. This is a source-level implementation; the user's first headset test
+validated the earlier attack-swing pin, but has not yet validated idle suppression
+or the new height control.
+
+The wrench class's defaults also name `Swing_A_Wrench` and `Swing_B_Wrench` as
+firing clips. The collision updater's distinct sampled collision pose and hit
+path remain as documented above. The F10 panel's height control is likewise
+implemented in source but awaits a fresh in-game check.
+
+### Wrench resting-pose suppression follow-up (2026-10-11) — Codex
+
+The user's headset report identified the remaining motion precisely: the wrench
+turns left into the resting position as if held by the other hand. Inspection of
+the installed `Build\\Final\\BakedScripts\\pc\\ShockGame.U` Wrench defaults
+confirmed `IdlingHandsAnim[0]="FidgetWrench"` and
+`IdlingHandsAnim[1]="FidgetSlapWrench"`. The current name resolver reads the
+Wrench's `HandsAnimationHandle` through the same SkeletonInstance map used by
+the attack suppression. The fix gates only reference-pose adoption for those
+two exact names; it does not stop or cancel the animation, and does not alter
+the attack collision sampler.
+
+The gate requires a valid prior reference and therefore fails open during an
+uninitialized rig. Runtime validation must confirm the equip animation leaves
+such a reference available before the idle clips begin, and that the resting
+pose no longer appears while physical swing hits remain intact. — Codex
+
+### Idle lookup and overlay-key diagnostic follow-up (2026-10-11) — Codex
+
+The user's headset report after the first idle-pose build showed that the
+resting animation still appeared. The new build checks the SkeletonInstance's
+animation-channel map for either exact Wrench idle name, in addition to the
+weapon's `HandsAnimationHandle`. This covers idle channels that are not
+represented by the firing handle. The map traversal is bounded at 256 entries
+and fails open if the names are not found. It logs whether the clip was found
+through the firing handle or the map, so the next runtime session can confirm
+the lookup before any further targeting changes.
+
+The same runtime log showed that the overlay initialized, but the previous
+version logged no key transitions. The menu still toggles with F10 and now also
+toggles with Insert; each key edge logs the resulting visibility. This will
+distinguish a keypress that reaches the render loop from a menu-rendering issue.
+— Codex
+
 ## Foreground scene FOV (session 13, 2026-07-26 - the camera-coupled rig term)
 
 **The renderer draws the first-person rig as a separate FOREGROUND scene with a

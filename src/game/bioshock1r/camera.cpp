@@ -64,6 +64,10 @@ std::atomic<bool>  g_logCamera{true};
 // world/hands scale SPLIT (own stereo for the viewmodel) is the M9 polish
 // item if that trade ever bothers.
 std::atomic<float> g_worldScale{100.0f};       // Unreal units per meter
+// Player-height calibration moves the camera and the XR-to-game base together.
+// Unlike the legacy head-anchor offset below, this keeps hands and aim aligned
+// with the corrected viewpoint.
+std::atomic<float> g_playerHeightCm{0.0f};
 // User head-anchor offset (session 16 part 3): the pawn's authored eye
 // height reads wrong once worldScale moves (60 UU = 0.6 m at 100 UU/m - the
 // "head very wrong" report); vertical + view-forward sliders correct the
@@ -766,6 +770,7 @@ void save_vr_preset() {
     }
     fprintf(f, "# BioShock VR - VR preset 1 slider values (toggles are implied ON)\n");
     fprintf(f, "worldScale=%.1f\n", g_worldScale.load(std::memory_order_relaxed));
+    fprintf(f, "playerHeightCm=%.1f\n", g_playerHeightCm.load(std::memory_order_relaxed));
     fprintf(f, "headUpUu=%.1f\n", g_headOffUpUu.load(std::memory_order_relaxed));
     fprintf(f, "headFwdUu=%.1f\n", g_headOffFwdUu.load(std::memory_order_relaxed));
     fprintf(f, "ipdMm=%.1f\n", g_ipdMm.load(std::memory_order_relaxed));
@@ -848,6 +853,9 @@ void load_vr_preset_values() {
             continue;
         ++n;
         if (strcmp(key, "worldScale") == 0) g_worldScale.store(v, std::memory_order_relaxed);
+        else if (strcmp(key, "playerHeightCm") == 0)
+            g_playerHeightCm.store(fmaxf(-100.0f, fminf(100.0f, v)),
+                                   std::memory_order_relaxed);
         else if (strcmp(key, "headUpUu") == 0) g_headOffUpUu.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "headFwdUu") == 0) g_headOffFwdUu.store(v, std::memory_order_relaxed);
         else if (strcmp(key, "ipdMm") == 0) g_ipdMm.store(v, std::memory_order_relaxed);
@@ -1167,6 +1175,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
     // the pre-head-offset camera loc and the yaw the drive added.
     FVector baseLoc = loc ? *loc : FVector{};
     float driveYawOffsetRad = 0.0f;
+    float playerHeightOffsetUu = 0.0f;
     // The same quantity in rotator units - what M7.5 transfers to the body.
     int32_t residualUnits = 0;
     int32_t gameYawUnitsRaw = rot ? rot->yaw : 0; // the engine's own body yaw
@@ -1316,6 +1325,13 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         g_headOffY.store(oy, std::memory_order_relaxed);
         g_headOffZ.store(oz, std::memory_order_relaxed);
 
+        // Height calibration is shared by the camera and the controller/aim
+        // mapping base. This adjusts VR standing height without changing the
+        // game's pawn location or collision capsule.
+        playerHeightOffsetUu = g_playerHeightCm.load(std::memory_order_relaxed) *
+                               (scale / 100.0f);
+        loc->z += playerHeightOffsetUu;
+
         // User head-anchor offset (sliders; see the atomics above). Vertical
         // is world-up; forward rides the final view yaw, horizontal only.
         float hoUp = g_headOffUpUu.load(std::memory_order_relaxed);
@@ -1446,7 +1462,7 @@ void __fastcall CalcViewDetour(void* self, void* edx, void** viewActor,
         }
         fc.baseX = baseLoc.x;
         fc.baseY = baseLoc.y;
-        fc.baseZ = baseLoc.z;
+        fc.baseZ = baseLoc.z + (vrDrove ? playerHeightOffsetUu : 0.0f);
         if (rot) {
             fc.camPitch = rot->pitch;
             fc.camYaw = rot->yaw;
@@ -2132,6 +2148,8 @@ void draw_debug_ui() {
         }
         atomic_slider("World scale (UU per m)", g_worldScale, 10.0f, 200.0f);
         atomic_slider("IPD (mm)", g_ipdMm, 55.0f, 75.0f);
+        atomic_slider("Player height correction (cm)", g_playerHeightCm, -100.0f, 100.0f);
+        ImGui::TextDisabled("Moves the VR view, tracked hands, and aim together; save preset values to keep it.");
         atomic_slider("Head offset up (UU)", g_headOffUpUu, -150.0f, 150.0f);
         atomic_slider("Head offset fwd (UU)", g_headOffFwdUu, -80.0f, 80.0f);
         if (ImGui::Button("Recenter (seated pose + view yaw)"))
