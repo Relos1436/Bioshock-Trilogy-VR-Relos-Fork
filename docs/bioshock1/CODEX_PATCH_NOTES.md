@@ -4,10 +4,12 @@ This file records the local BioShock Remastered changes carried on the
 `codex/bs1-wrench-visual-suppression` branch. The source baseline is upstream
 v0.8.3, commit `41f004bc6a1e4fa8be0d0e0749f9ac5a0453e75e`.
 
-The changes and full upstream history are preserved in the private repository
+The upstream-connected public fork is
+https://github.com/Relos1436/bioshock-trilogy-vr. A private standalone backup
+with the same changes and upstream history is at
 https://github.com/Relos1436/bioshock-trilogy-vr-private. GitHub does not permit
-a public repository to have a private fork, so this is a private standalone
-copy rather than a fork-network repository.
+a public repository to have a private fork, so the backup is not connected to
+the upstream fork network.
 
 ## Changes and additions
 

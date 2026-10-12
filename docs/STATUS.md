@@ -12,11 +12,12 @@ the changed files, installed build hashes, and validation boundary.
 
 The user reports in-headset that the wrench idle now appears fixed and that the
 menu and height control are usable. The user has not separately confirmed hit
-registration in the latest build. The source and notes are now pushed to the
-private standalone copy [Relos1436/bioshock-trilogy-vr-private](https://github.com/Relos1436/bioshock-trilogy-vr-private)
-at commit `c1262c542a4ad4a02d57cb9074b41d445dd32120`. GitHub does not permit a
-private fork of a public repository; this private copy retains the upstream
-history and is not connected to the upstream fork network.
+registration in the latest build. The public upstream-connected fork is
+[Relos1436/bioshock-trilogy-vr](https://github.com/Relos1436/bioshock-trilogy-vr).
+The same source and history are also kept in the private standalone backup
+[Relos1436/bioshock-trilogy-vr-private](https://github.com/Relos1436/bioshock-trilogy-vr-private).
+GitHub does not permit a public repository to have a private fork, so the
+private backup is not connected to the upstream fork network.
 
 — Codex
 
@@ -11823,6 +11824,9 @@ THEN arm 1t):**
 - Created the private standalone copy `Relos1436/bioshock-trilogy-vr-private`,
   preserved the upstream history, and pushed the source and notes at commit
   `c1262c542a4ad4a02d57cb9074b41d445dd32120`.
+- Created the public upstream-connected fork `Relos1436/bioshock-trilogy-vr`
+  after the user approved public visibility; pushed the wrench changes and
+  notes to its `main` branch.
 
 — Codex
 
